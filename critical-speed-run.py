@@ -72,7 +72,7 @@ st.markdown('<p class="highlight">Science-based cycling performance metrics</p>'
 
 # Sidebar
 with st.sidebar:
-    st.image("https://via.placeholder.com/150x150.png?text=Your+Logo", width=150)
+    st.image("Logotype_Light@2x.png", width=150)
     st.markdown("## Test Protocols")
     test_method = st.selectbox(
         "Select Testing Method",
