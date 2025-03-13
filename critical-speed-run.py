@@ -2,13 +2,13 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import math
 from scipy.optimize import curve_fit
+import math
 
 # Set page configuration
 st.set_page_config(
-    page_title="Critical Power Calculator",
-    page_icon="🚴‍♂️",
+    page_title="Critical Speed Calculator",
+    page_icon="🏃‍♂️",
     layout="wide"
 )
 
@@ -67,19 +67,19 @@ footer {
 """, unsafe_allow_html=True)
 
 # Header
-st.title("Critical Power Calculator for Cyclists")
-st.markdown('<p class="highlight">Science-based cycling performance metrics</p>', unsafe_allow_html=True)
+st.title("Critical Speed Calculator for Runners")
+st.markdown('<p class="highlight">Science-based running performance metrics</p>', unsafe_allow_html=True)
 
 # Sidebar
 with st.sidebar:
-    st.image("Logotype_Light@2x.png", width=150)
+    st.image("https://via.placeholder.com/150x150.png?text=Your+Logo", width=150)
     st.markdown("## Test Protocols")
     test_method = st.selectbox(
         "Select Testing Method",
-        ["3-min All Out Test", "Multiple Time Trial", "Ramp Test", "Time to Exhaustion Test"]
+        ["3-Minute All Out Test", "Time Trials Method", "3/5-Minute Test", "Ramp Test", "Time to Exhaustion Test"]
     )
     
-    st.markdown("## Rider Information")
+    st.markdown("## Runner Information")
     weight = st.number_input("Weight (kg)", min_value=30.0, max_value=150.0, value=70.0, step=0.1)
     
     experience_level = st.radio(
@@ -90,317 +90,538 @@ with st.sidebar:
     with st.expander("Advanced Settings"):
         show_formulas = st.checkbox("Show calculation formulas", value=False)
         show_references = st.checkbox("Show scientific references", value=True)
+        distance_unit = st.radio("Distance Unit", ["Meters", "Kilometers", "Miles"])
 
-# Helper functions
-def calculate_cp_from_3min(max_power, end_power):
-    # Based on Vanhatalo et al. (2007)
-    cp = end_power
-    w_prime = (max_power - end_power) * 180  # 3 minutes in seconds
-    return cp, w_prime
+# Helper functions for unit conversion
+def convert_to_meters(distance, unit):
+    if unit == "Kilometers":
+        return distance * 1000
+    elif unit == "Miles":
+        return distance * 1609.34
+    return distance
 
-def calculate_cp_from_time_trials(powers, durations):
-    # 2-parameter critical power model (Monod & Scherrer, 1965)
-    def power_model(t, cp, w_prime):
-        return cp + (w_prime / t)
+def convert_from_meters(distance, unit):
+    if unit == "Kilometers":
+        return distance / 1000
+    elif unit == "Miles":
+        return distance / 1609.34
+    return distance
+
+def format_pace(speed_mps, unit):
+    """Convert speed in m/s to pace format (min:sec per km or mile)"""
+    if unit == "Kilometers":
+        pace_seconds = 1000 / speed_mps
+    elif unit == "Miles":
+        pace_seconds = 1609.34 / speed_mps
+    else:  # Meters doesn't make sense for pace
+        pace_seconds = 1000 / speed_mps
     
-    popt, _ = curve_fit(power_model, durations, powers)
-    cp, w_prime = popt
-    return cp, w_prime
+    minutes = int(pace_seconds // 60)
+    seconds = int(pace_seconds % 60)
+    return f"{minutes}:{seconds:02d}"
 
-def calculate_cp_from_ramp(final_power, time_to_exhaustion, ramp_rate):
-    # Based on Poole et al. (2016)
-    cp = final_power - (0.5 * ramp_rate * time_to_exhaustion / 60)
-    w_prime = 0.5 * ramp_rate * (time_to_exhaustion / 60) ** 2
-    return cp, w_prime
+# Helper functions for critical speed calculations
+def calculate_cs_from_3min(max_speed, end_speed):
+    """Calculate critical speed from 3-minute all out test"""
+    cs = end_speed
+    d_prime = (max_speed - end_speed) * 180  # 3 minutes in seconds
+    return cs, d_prime
 
-def calculate_cp_from_tte(power, time_to_exhaustion):
-    # Simplified calculation based on time to exhaustion
-    # This is a placeholder - actual implementation would require multiple tests
-    if len(power) < 2 or len(time_to_exhaustion) < 2:
+def calculate_cs_from_time_trials(distances, times):
+    """Calculate critical speed from time-trial method"""
+    # Linear regression of distance vs time model
+    def distance_model(t, cs, d_prime):
+        return cs * t + d_prime
+    
+    popt, _ = curve_fit(distance_model, times, distances)
+    cs, d_prime = popt
+    return cs, d_prime
+
+def calculate_cs_from_3_5min(distance_3min, distance_5min):
+    """Calculate critical speed from 3/5-minute test"""
+    time_diff = 120  # 5min - 3min = 2min = 120sec
+    cs = (distance_5min - distance_3min) / time_diff
+    d_prime = distance_3min - (cs * 180)  # 3min = 180sec
+    return cs, d_prime
+
+def calculate_cs_from_ramp(final_speed, time_to_exhaustion, ramp_rate):
+    """Calculate critical speed from ramp test"""
+    # Based on analogous calculations from critical power literature
+    cs = final_speed - (0.5 * ramp_rate * time_to_exhaustion / 60)
+    d_prime = 0.5 * ramp_rate * (time_to_exhaustion / 60) ** 2
+    return cs, d_prime
+
+def calculate_cs_from_tte(speeds, times):
+    """Calculate critical speed from time to exhaustion tests"""
+    if len(speeds) < 2 or len(times) < 2:
         return 0, 0
         
-    def power_duration_model(t, cp, w_prime):
-        return cp + w_prime / t
+    def speed_time_model(t, cs, d_prime):
+        return cs + d_prime / t
     
-    popt, _ = curve_fit(power_duration_model, time_to_exhaustion, power)
-    cp, w_prime = popt
-    return cp, w_prime
+    popt, _ = curve_fit(speed_time_model, times, speeds)
+    cs, d_prime = popt
+    return cs, d_prime
 
-def calculate_ftp_from_cp(cp):
-    # Typically FTP ≈ 95% of CP (Jeffries et al., 2019)
-    return cp * 0.95
-
-def calculate_training_zones(ftp):
-    # Traditional 7-zone model
-    zones = {
-        "Active Recovery": (0, 0.55 * ftp),
-        "Endurance": (0.55 * ftp, 0.75 * ftp),
-        "Tempo": (0.75 * ftp, 0.90 * ftp),
-        "Threshold": (0.90 * ftp, 1.05 * ftp),
-        "VO2 Max": (1.05 * ftp, 1.20 * ftp),
-        "Anaerobic Capacity": (1.20 * ftp, 1.50 * ftp),
-        "Neuromuscular Power": (1.50 * ftp, float('inf'))
+def calculate_training_paces(cs, unit):
+    """Calculate training paces based on critical speed"""
+    # Pace zones based on scientific literature for running
+    paces = {
+        "Recovery": (0.60 * cs, 0.70 * cs),
+        "Easy/Aerobic": (0.70 * cs, 0.80 * cs),
+        "Moderate": (0.80 * cs, 0.87 * cs),
+        "Threshold": (0.87 * cs, 0.93 * cs),
+        "Critical Speed": (0.93 * cs, 1.00 * cs),
+        "Interval": (1.00 * cs, 1.10 * cs),
+        "Repetition": (1.10 * cs, 1.20 * cs)
     }
-    return zones
+    
+    formatted_paces = {}
+    for zone, (lower, upper) in paces.items():
+        lower_pace = format_pace(lower, unit)
+        upper_pace = format_pace(upper, unit)
+        
+        if unit == "Kilometers":
+            formatted_paces[zone] = f"{lower_pace} - {upper_pace} min/km"
+        elif unit == "Miles":
+            formatted_paces[zone] = f"{lower_pace} - {upper_pace} min/mile"
+        else:
+            formatted_paces[zone] = f"{lower_pace} - {upper_pace} min/km"
+            
+    return formatted_paces
 
-def w_prime_balance(power_data, cp, w_prime, tau=546):
+def predict_race_times(cs, d_prime, unit):
+    """Predict race times for common distances based on CS and D'"""
+    distances = {
+        "800m": 800,
+        "1500m": 1500,
+        "Mile": 1609.34,
+        "3000m": 3000,
+        "5K": 5000,
+        "10K": 10000,
+        "Half Marathon": 21097.5,
+        "Marathon": 42195
+    }
+    
+    predictions = {}
+    for race, dist in distances.items():
+        # Using the inverse of the CS-D' relationship: t = d/CS - D'/CS²
+        time_seconds = dist / cs - d_prime / (cs * cs)
+        
+        if time_seconds > 0:
+            hours = int(time_seconds // 3600)
+            minutes = int((time_seconds % 3600) // 60)
+            seconds = int(time_seconds % 60)
+            
+            if hours > 0:
+                predictions[race] = f"{hours}:{minutes:02d}:{seconds:02d}"
+            else:
+                predictions[race] = f"{minutes}:{seconds:02d}"
+        else:
+            predictions[race] = "N/A"
+            
+    return predictions
+
+def d_prime_balance(speed_data, cs, d_prime, tau=300):
     """
-    Calculate W' balance over a ride
-    Based on the W'bal ODE Model by Skiba et al. (2015)
+    Calculate D' balance over a run
+    Based on similar methodology to W' balance in cycling
     
     Parameters:
-    power_data: array of power data
-    cp: critical power
-    w_prime: W' (anaerobic work capacity)
-    tau: time constant for W' reconstitution
+    speed_data: array of speed data in m/s
+    cs: critical speed in m/s
+    d_prime: D' (anaerobic distance capacity) in meters
+    tau: time constant for D' reconstitution
     
     Returns:
-    Array of W' balance values
+    Array of D' balance values
     """
-    w_prime_balance = np.ones(len(power_data)) * w_prime
-    for i in range(1, len(power_data)):
-        expenditure = max(0, (power_data[i-1] - cp)) # W' expenditure
-        recovery = min(0, (power_data[i-1] - cp))    # W' recovery
+    d_prime_balance = np.ones(len(speed_data)) * d_prime
+    for i in range(1, len(speed_data)):
+        expenditure = max(0, (speed_data[i-1] - cs)) # D' expenditure
+        recovery = min(0, (speed_data[i-1] - cs))    # D' recovery
         
-        # Apply Skiba's differential equation
+        # Apply differential equation similar to Skiba's W' model
         if expenditure > 0:
-            w_prime_balance[i] = w_prime_balance[i-1] - expenditure
+            d_prime_balance[i] = d_prime_balance[i-1] - expenditure
         else:
-            # W' reconstitution
-            w_prime_balance[i] = w_prime - (w_prime - w_prime_balance[i-1]) * np.exp(recovery / (tau * cp))
+            # D' reconstitution
+            d_prime_balance[i] = d_prime - (d_prime - d_prime_balance[i-1]) * np.exp(recovery / (tau * cs))
             
-        # Ensure W' balance doesn't exceed W'
-        w_prime_balance[i] = min(w_prime, max(0, w_prime_balance[i]))
+        # Ensure D' balance doesn't exceed D'
+        d_prime_balance[i] = min(d_prime, max(0, d_prime_balance[i]))
         
-    return w_prime_balance
+    return d_prime_balance
 
 # Main content based on selected method
-if test_method == "3-min All Out Test":
+if test_method == "3-Minute All Out Test":
     st.markdown("## 3-Minute All-Out Test")
     
     st.markdown("""
-    The 3-minute all-out test is a simplified protocol to determine Critical Power (CP) and W′ (W-prime).
+    The 3-minute all-out test is a simplified protocol to determine Critical Speed (CS) and D′ (anaerobic distance capacity).
     
     ### Protocol:
     1. Perform a thorough warm-up
     2. Start the test with maximal effort from the beginning
     3. Continue with maximum possible effort for the entire 3 minutes
-    4. Record your maximum power and average power for the last 30 seconds
+    4. Record your maximum speed and average speed for the last 30 seconds
     """)
     
     col1, col2 = st.columns(2)
     
     with col1:
-        max_power = st.number_input("Maximum Power (Watts)", min_value=100, max_value=2000, value=700)
-        end_power = st.number_input("Average Power in Last 30s (Watts)", min_value=100, max_value=2000, value=300)
+        max_speed = st.number_input("Maximum Speed (m/s)", min_value=1.0, max_value=10.0, value=5.0, step=0.1)
+        end_speed = st.number_input("Average Speed in Last 30s (m/s)", min_value=1.0, max_value=10.0, value=4.0, step=0.1)
+        
+        # Add unit conversion UI if needed
+        st.markdown("### Speed Entry Options")
+        speed_entry = st.radio("Speed Entry Method", ["Direct (m/s)", "Pace"])
+        
+        if speed_entry == "Pace":
+            pace_unit = "min/km" if distance_unit != "Miles" else "min/mile"
+            max_pace_min = st.number_input("Maximum Pace Minutes", min_value=1, max_value=10, value=3)
+            max_pace_sec = st.number_input("Maximum Pace Seconds", min_value=0, max_value=59, value=0)
+            end_pace_min = st.number_input("End Pace Minutes", min_value=1, max_value=10, value=4)
+            end_pace_sec = st.number_input("End Pace Seconds", min_value=0, max_value=59, value=0)
+            
+            # Convert pace to speed
+            max_pace_seconds = max_pace_min * 60 + max_pace_sec
+            end_pace_seconds = end_pace_min * 60 + end_pace_sec
+            
+            if distance_unit == "Miles":
+                max_speed = 1609.34 / max_pace_seconds
+                end_speed = 1609.34 / end_pace_seconds
+            else:
+                max_speed = 1000 / max_pace_seconds
+                end_speed = 1000 / end_pace_seconds
         
         if st.button("Calculate"):
-            cp, w_prime = calculate_cp_from_3min(max_power, end_power)
-            ftp = calculate_ftp_from_cp(cp)
+            cs, d_prime = calculate_cs_from_3min(max_speed, end_speed)
             
             with col2:
                 st.markdown('<div class="result-box">', unsafe_allow_html=True)
                 st.markdown(f"### Results")
-                st.markdown(f"**Critical Power (CP):** {cp:.1f} Watts")
-                st.markdown(f"**CP/kg:** {cp/weight:.2f} W/kg")
-                st.markdown(f"**W′ (W-prime):** {w_prime:.0f} Joules")
-                st.markdown(f"**FTP (estimated):** {ftp:.1f} Watts")
+                st.markdown(f"**Critical Speed (CS):** {cs:.2f} m/s")
                 
-                # Training zones
-                zones = calculate_training_zones(ftp)
-                st.markdown("### Training Zones")
-                for zone, (lower, upper) in zones.items():
-                    st.markdown(f"**{zone}:** {lower:.0f} - {upper:.0f} Watts")
+                # Convert to pace
+                cs_pace_km = format_pace(cs, "Kilometers")
+                cs_pace_mile = format_pace(cs, "Miles")
+                
+                st.markdown(f"**Critical Pace:** {cs_pace_km} min/km ({cs_pace_mile} min/mile)")
+                st.markdown(f"**D′ (Anaerobic Distance Capacity):** {d_prime:.0f} meters")
+                
+                # Calculate and display training paces
+                st.markdown("### Training Paces")
+                paces = calculate_training_paces(cs, distance_unit)
+                for zone, pace_range in paces.items():
+                    st.markdown(f"**{zone}:** {pace_range}")
+                
+                # Predict race times
+                st.markdown("### Predicted Race Times")
+                predictions = predict_race_times(cs, d_prime, distance_unit)
+                for race, time in predictions.items():
+                    st.markdown(f"**{race}:** {time}")
+                    
                 st.markdown('</div>', unsafe_allow_html=True)
-
-# Add explanation of results
-st.markdown("---")
-st.markdown("## Interpreting Your Results")
-
-st.markdown("""
-### Critical Power (CP)
-Critical Power represents the highest intensity you can sustain for a very long time (theoretically 30-60 minutes) without continual fatigue accumulation. It's closely related to your lactate threshold and is a fundamental metric for endurance performance.
-
-### W′ (W-prime)
-W′ represents your finite anaerobic work capacity - the amount of work you can perform above your Critical Power before exhaustion. Think of it as your "battery" of high-intensity energy.
-
-### How to use these metrics:
-1. **Pacing:** In longer events, stay at or slightly below your CP to avoid depleting W′
-2. **Intervals:** Design interval sessions that target CP (to improve it) or W′ (to expand it)
-3. **Race strategy:** For time trials, manage your W′ expenditure carefully - save some for hills and finish
-4. **Training zones:** Use CP to set precise, physiologically meaningful training zones
-
-### What makes a good CP and W′?
-| Level | CP/kg (W/kg) | W′/kg (J/kg) |
-|-------|-------------|--------------|
-| Recreational | 2.5-3.5 | 10-15 |
-| Competitive | 3.5-4.5 | 15-25 |
-| Elite | 4.5-5.5 | 20-30 |
-| World Class | 5.5+ | 25-35 |
-
-*Note: These values vary based on gender, age, and specialization.*
-""")
-
-# Add a footer
-st.markdown("---")
-st.markdown('<footer>Critical Power Calculator for Cyclists © 2025</footer>', unsafe_allow_html=True)
     
     if show_formulas:
         st.markdown("### Calculation Method")
         st.markdown("""
-        - Critical Power (CP) = Average power during the final 30 seconds
-        - W′ = (Maximum power - CP) × 180 seconds
+        - Critical Speed (CS) = Average speed during the final 30 seconds
+        - D′ = (Maximum speed - CS) × 180 seconds
         """)
     
     if show_references:
         st.markdown("### Scientific References")
         st.markdown("""
-        1. Vanhatalo, A., Doust, J. H., & Burnley, M. (2007). Determination of critical power using a 3-min all-out cycling test. Medicine and Science in Sports and Exercise, 39(3), 548-555.
+        1. Pettitt, R. W., Jamnick, N., & Clark, I. E. (2012). 3-min all-out exercise test for running. International Journal of Sports Medicine, 33(6), 426-431.
         
-        2. Burnley, M., Doust, J. H., & Vanhatalo, A. (2006). A 3-min all-out test to determine peak oxygen uptake and the maximal steady state. Medicine and Science in Sports and Exercise, 38(11), 1995-2003.
+        2. Broxterman, R. M., Ade, C. J., Poole, D. C., Harms, C. A., & Barstow, T. J. (2013). A single test for the determination of parameters of the speed-time relationship for running. Respiratory Physiology & Neurobiology, 185(2), 380-385.
         """)
 
-elif test_method == "Multiple Time Trial":
-    st.markdown("## Multiple Time Trial Test")
+elif test_method == "Time Trials Method":
+    st.markdown("## Time Trials Method")
     
     st.markdown("""
-    This method requires performing 3-5 maximal effort time trials of different durations to plot the power-duration relationship.
+    This method requires performing time trials at different distances to determine Critical Speed and D′.
     
     ### Protocol:
-    1. Perform 3-5 time trials of different durations (typically 1-20 minutes)
-    2. Record average power for each trial
+    1. Perform 3-5 maximal effort runs of different distances
+    2. Record your time for each distance
     3. Rest at least 24 hours between trials
-    4. Input the data below to calculate CP and W′
+    4. Input the data below to calculate CS and D′
     """)
     
     num_trials = st.number_input("Number of Time Trials", min_value=2, max_value=5, value=3)
     
     cols = st.columns(num_trials)
-    durations = []
-    powers = []
+    distances = []
+    times = []
     
     for i in range(num_trials):
         with cols[i]:
             st.markdown(f"### Trial {i+1}")
-            duration = st.number_input(f"Duration (seconds)", min_value=60, max_value=1200, value=120 + i*180, key=f"dur_{i}")
-            power = st.number_input(f"Average Power (watts)", min_value=100, max_value=2000, value=400 - i*50, key=f"pow_{i}")
-            durations.append(duration)
-            powers.append(power)
+            
+            # Distance entry with unit conversion
+            distance_val = st.number_input(f"Distance ({distance_unit})", 
+                                         min_value=0.1, 
+                                         max_value=50.0 if distance_unit != "Meters" else 10000.0, 
+                                         value=1.0 if distance_unit != "Meters" else 400.0,
+                                         step=0.1,
+                                         key=f"dist_{i}")
+            
+            distance_meters = convert_to_meters(distance_val, distance_unit)
+            
+            # Time entry
+            minutes = st.number_input(f"Minutes", min_value=0, max_value=180, value=3 if i == 0 else 5 if i == 1 else 10, key=f"min_{i}")
+            seconds = st.number_input(f"Seconds", min_value=0, max_value=59, value=0, key=f"sec_{i}")
+            
+            time_seconds = minutes * 60 + seconds
+            
+            distances.append(distance_meters)
+            times.append(time_seconds)
     
     if st.button("Calculate"):
         if num_trials >= 2:
-            cp, w_prime = calculate_cp_from_time_trials(powers, durations)
-            ftp = calculate_ftp_from_cp(cp)
+            cs, d_prime = calculate_cs_from_time_trials(distances, times)
             
             col1, col2 = st.columns([3, 2])
             
             with col1:
                 st.markdown('<div class="result-box">', unsafe_allow_html=True)
                 st.markdown(f"### Results")
-                st.markdown(f"**Critical Power (CP):** {cp:.1f} Watts")
-                st.markdown(f"**CP/kg:** {cp/weight:.2f} W/kg")
-                st.markdown(f"**W′ (W-prime):** {w_prime:.0f} Joules")
-                st.markdown(f"**FTP (estimated):** {ftp:.1f} Watts")
+                st.markdown(f"**Critical Speed (CS):** {cs:.2f} m/s")
                 
-                # Training zones
-                zones = calculate_training_zones(ftp)
-                st.markdown("### Training Zones")
-                for zone, (lower, upper) in zones.items():
-                    st.markdown(f"**{zone}:** {lower:.0f} - {upper:.0f} Watts")
+                # Convert to pace
+                cs_pace_km = format_pace(cs, "Kilometers")
+                cs_pace_mile = format_pace(cs, "Miles")
+                
+                st.markdown(f"**Critical Pace:** {cs_pace_km} min/km ({cs_pace_mile} min/mile)")
+                st.markdown(f"**D′ (Anaerobic Distance Capacity):** {d_prime:.0f} meters")
+                
+                # Calculate and display training paces
+                st.markdown("### Training Paces")
+                paces = calculate_training_paces(cs, distance_unit)
+                for zone, pace_range in paces.items():
+                    st.markdown(f"**{zone}:** {pace_range}")
+                
+                # Predict race times
+                st.markdown("### Predicted Race Times")
+                predictions = predict_race_times(cs, d_prime, distance_unit)
+                for race, time in predictions.items():
+                    st.markdown(f"**{race}:** {time}")
+                    
                 st.markdown('</div>', unsafe_allow_html=True)
             
             with col2:
-                # Plot power-duration curve
+                # Plot distance-time relationship
                 fig, ax = plt.subplots(figsize=(10, 6))
                 
                 # Plot actual data points
-                ax.scatter(durations, powers, color='#E6754E', s=100, label='Time Trials')
+                ax.scatter(times, distances, color='#E6754E', s=100, label='Time Trials')
                 
-                # Generate points for the hyperbolic curve
-                x_curve = np.linspace(min(durations) * 0.8, max(durations) * 1.2, 100)
-                y_curve = [cp + (w_prime / x) for x in x_curve]
+                # Generate points for the linear relationship
+                x_curve = np.linspace(0, max(times) * 1.2, 100)
+                y_curve = cs * x_curve + d_prime
                 
-                # Plot the fitted curve
-                ax.plot(x_curve, y_curve, 'b-', label='Power-Duration Curve')
+                # Plot the fitted line
+                ax.plot(x_curve, y_curve, 'b-', label='Distance-Time Line')
                 
-                # Add horizontal line for CP
-                ax.axhline(y=cp, color='g', linestyle='--', label=f'CP: {cp:.1f}W')
+                # Set axis labels based on user's unit preference
+                ax.set_xlabel('Time (seconds)')
                 
-                ax.set_xlabel('Duration (seconds)')
-                ax.set_ylabel('Power (watts)')
-                ax.set_title('Power-Duration Relationship')
+                if distance_unit == "Kilometers":
+                    ax.set_ylabel('Distance (km)')
+                    # Convert y-axis from meters to kilometers
+                    ax.set_yticks(np.arange(0, max(distances) * 1.2, 1000))
+                    ax.set_yticklabels([f"{x/1000:.0f}" for x in np.arange(0, max(distances) * 1.2, 1000)])
+                elif distance_unit == "Miles":
+                    ax.set_ylabel('Distance (miles)')
+                    # Convert y-axis from meters to miles
+                    ax.set_yticks(np.arange(0, max(distances) * 1.2, 1609.34))
+                    ax.set_yticklabels([f"{x/1609.34:.0f}" for x in np.arange(0, max(distances) * 1.2, 1609.34)])
+                else:
+                    ax.set_ylabel('Distance (meters)')
+                
+                ax.set_title('Distance-Time Relationship')
                 ax.grid(True, alpha=0.3)
                 ax.legend()
                 
                 st.pyplot(fig)
+                
+                # Also show in tabular format
+                st.markdown("### Trial Data")
+                trial_data = []
+                for i in range(num_trials):
+                    trial_data.append({
+                        "Distance": f"{convert_from_meters(distances[i], distance_unit):.2f} {distance_unit}",
+                        "Time": f"{times[i] // 60}:{times[i] % 60:02d}",
+                        "Speed": f"{distances[i] / times[i]:.2f} m/s"
+                    })
+                
+                st.table(pd.DataFrame(trial_data))
         else:
             st.error("At least 2 time trials are required for calculation")
     
     if show_formulas:
         st.markdown("### Calculation Method")
         st.markdown("""
-        The 2-parameter critical power model is used:
+        The linear distance-time model is used:
         
-        P = CP + W′/t
+        d = CS × t + D′
         
         Where:
-        - P is the average power for a given duration
-        - t is the duration in seconds
-        - CP is critical power
-        - W′ is the anaerobic work capacity
+        - d is the distance covered
+        - t is the time in seconds
+        - CS is critical speed
+        - D′ is the anaerobic distance capacity
         
-        The parameters are determined through hyperbolic curve fitting.
+        The parameters are determined through linear regression.
         """)
     
     if show_references:
         st.markdown("### Scientific References")
         st.markdown("""
-        1. Monod, H., & Scherrer, J. (1965). The work capacity of a synergic muscular group. Ergonomics, 8(3), 329-338.
+        1. Jones, A. M., & Vanhatalo, A. (2017). The 'Critical Power' concept: Applications to sports performance with a focus on intermittent high-intensity exercise. Sports Medicine, 47(Suppl 1), 65-78.
         
-        2. Jones, A. M., Vanhatalo, A., Burnley, M., Morton, R. H., & Poole, D. C. (2010). Critical power: Implications for determination of VO2max and exercise tolerance. Medicine and Science in Sports and Exercise, 42(10), 1876-1890.
+        2. Florence, S., & Weir, J. P. (1997). Relationship of critical velocity to marathon running performance. European Journal of Applied Physiology and Occupational Physiology, 75(3), 274-278.
         
-        3. Karsten, B., Jobson, S. A., Hopker, J., Jimenez, A., & Beedie, C. (2014). High agreement between laboratory and field estimates of critical power in cycling. International Journal of Sports Medicine, 35(4), 298-303.
+        3. Fukuba, Y., & Whipp, B. J. (1999). A metabolic limit on the ability to make up for lost time in endurance events. Journal of Applied Physiology, 87(2), 853-861.
+        """)
+
+elif test_method == "3/5-Minute Test":
+    st.markdown("## 3/5-Minute Test")
+    
+    st.markdown("""
+    This method uses two time-based all-out efforts to determine Critical Speed and D′.
+    
+    ### Protocol:
+    1. Perform a 3-minute all-out run, measuring the total distance covered
+    2. After sufficient recovery (24-48 hours), perform a 5-minute all-out run
+    3. Input both distances to calculate CS and D′
+    """)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Distance entry with unit conversion
+        distance_3min_val = st.number_input(f"3-Minute Distance ({distance_unit})", 
+                                     min_value=0.1, 
+                                     max_value=50.0 if distance_unit != "Meters" else 5000.0, 
+                                     value=0.8 if distance_unit != "Meters" else 800.0,
+                                     step=0.1)
+        
+        distance_5min_val = st.number_input(f"5-Minute Distance ({distance_unit})", 
+                                     min_value=0.1, 
+                                     max_value=50.0 if distance_unit != "Meters" else 5000.0, 
+                                     value=1.3 if distance_unit != "Meters" else 1300.0,
+                                     step=0.1)
+        
+        # Convert to meters
+        distance_3min = convert_to_meters(distance_3min_val, distance_unit)
+        distance_5min = convert_to_meters(distance_5min_val, distance_unit)
+        
+        if st.button("Calculate"):
+            cs, d_prime = calculate_cs_from_3_5min(distance_3min, distance_5min)
+            
+            with col2:
+                st.markdown('<div class="result-box">', unsafe_allow_html=True)
+                st.markdown(f"### Results")
+                st.markdown(f"**Critical Speed (CS):** {cs:.2f} m/s")
+                
+                # Convert to pace
+                cs_pace_km = format_pace(cs, "Kilometers")
+                cs_pace_mile = format_pace(cs, "Miles")
+                
+                st.markdown(f"**Critical Pace:** {cs_pace_km} min/km ({cs_pace_mile} min/mile)")
+                st.markdown(f"**D′ (Anaerobic Distance Capacity):** {d_prime:.0f} meters")
+                
+                # Calculate and display training paces
+                st.markdown("### Training Paces")
+                paces = calculate_training_paces(cs, distance_unit)
+                for zone, pace_range in paces.items():
+                    st.markdown(f"**{zone}:** {pace_range}")
+                
+                # Predict race times
+                st.markdown("### Predicted Race Times")
+                predictions = predict_race_times(cs, d_prime, distance_unit)
+                for race, time in predictions.items():
+                    st.markdown(f"**{race}:** {time}")
+                    
+                st.markdown('</div>', unsafe_allow_html=True)
+    
+    if show_formulas:
+        st.markdown("### Calculation Method")
+        st.markdown("""
+        Using the two distances covered:
+        
+        - CS = (5-min distance - 3-min distance) / 120 seconds
+        - D′ = 3-min distance - (CS × 180 seconds)
+        
+        This is based on the linear distance-time relationship, using two data points.
+        """)
+    
+    if show_references:
+        st.markdown("### Scientific References")
+        st.markdown("""
+        1. Burnley, M., Doust, J. H., & Vanhatalo, A. (2006). A 3-min all-out test to determine peak oxygen uptake and the maximal steady state. Medicine and Science in Sports and Exercise, 38(11), 1995-2003.
+        
+        2. Jones, A. M., & Vanhatalo, A. (2017). The 'Critical Power' concept: Applications to sports performance with a focus on intermittent high-intensity exercise. Sports Medicine, 47(Suppl 1), 65-78.
         """)
 
 elif test_method == "Ramp Test":
     st.markdown("## Ramp Test")
     
     st.markdown("""
-    The ramp test is an incremental exercise test where power is progressively increased until exhaustion.
+    The ramp test is an incremental exercise test where speed is progressively increased until exhaustion.
     
     ### Protocol:
-    1. Start at a low power output
-    2. Increase power at a constant rate (e.g., 25W/min)
+    1. Start at a low running speed
+    2. Increase speed at a constant rate (e.g., 0.5 km/h per minute)
     3. Continue until exhaustion
-    4. Record final power and time to exhaustion
+    4. Record final speed and time to exhaustion
     """)
     
     col1, col2 = st.columns(2)
     
     with col1:
-        starting_power = st.number_input("Starting Power (Watts)", min_value=50, max_value=200, value=100)
-        ramp_rate = st.number_input("Ramp Rate (Watts/min)", min_value=10, max_value=50, value=25)
+        starting_speed_kmh = st.number_input("Starting Speed (km/h)", min_value=4.0, max_value=12.0, value=8.0)
+        ramp_rate_kmh = st.number_input("Ramp Rate (km/h per minute)", min_value=0.1, max_value=2.0, value=0.5, step=0.1)
         time_to_exhaustion = st.number_input("Time to Exhaustion (seconds)", min_value=300, max_value=1800, value=720)
         
+        # Convert to m/s for calculations
+        starting_speed = starting_speed_kmh / 3.6
+        ramp_rate = ramp_rate_kmh / 3.6
+        
         if st.button("Calculate"):
-            final_power = starting_power + (ramp_rate * time_to_exhaustion / 60)
-            cp, w_prime = calculate_cp_from_ramp(final_power, time_to_exhaustion, ramp_rate)
-            ftp = calculate_ftp_from_cp(cp)
+            final_speed = starting_speed + (ramp_rate * time_to_exhaustion / 60)
+            cs, d_prime = calculate_cs_from_ramp(final_speed, time_to_exhaustion, ramp_rate)
             
             with col2:
                 st.markdown('<div class="result-box">', unsafe_allow_html=True)
                 st.markdown(f"### Results")
-                st.markdown(f"**Final Power:** {final_power:.1f} Watts")
-                st.markdown(f"**Critical Power (CP):** {cp:.1f} Watts")
-                st.markdown(f"**CP/kg:** {cp/weight:.2f} W/kg")
-                st.markdown(f"**W′ (W-prime):** {w_prime:.0f} Joules")
-                st.markdown(f"**FTP (estimated):** {ftp:.1f} Watts")
+                st.markdown(f"**Final Speed:** {final_speed*3.6:.1f} km/h ({final_speed:.2f} m/s)")
+                st.markdown(f"**Critical Speed (CS):** {cs:.2f} m/s ({cs*3.6:.1f} km/h)")
                 
-                # Training zones
-                zones = calculate_training_zones(ftp)
-                st.markdown("### Training Zones")
-                for zone, (lower, upper) in zones.items():
-                    st.markdown(f"**{zone}:** {lower:.0f} - {upper:.0f} Watts")
+                # Convert to pace
+                cs_pace_km = format_pace(cs, "Kilometers")
+                cs_pace_mile = format_pace(cs, "Miles")
+                
+                st.markdown(f"**Critical Pace:** {cs_pace_km} min/km ({cs_pace_mile} min/mile)")
+                st.markdown(f"**D′ (Anaerobic Distance Capacity):** {d_prime:.0f} meters")
+                
+                # Calculate and display training paces
+                st.markdown("### Training Paces")
+                paces = calculate_training_paces(cs, distance_unit)
+                for zone, pace_range in paces.items():
+                    st.markdown(f"**{zone}:** {pace_range}")
+                
+                # Predict race times
+                st.markdown("### Predicted Race Times")
+                predictions = predict_race_times(cs, d_prime, distance_unit)
+                for race, time in predictions.items():
+                    st.markdown(f"**{race}:** {time}")
+                    
                 st.markdown('</div>', unsafe_allow_html=True)
     
     if show_formulas:
@@ -408,94 +629,115 @@ elif test_method == "Ramp Test":
         st.markdown("""
         For a ramp test with constant increment rate:
         
-        - Critical Power (CP) = Pmax - (0.5 × ramp rate × TTE)
-        - W′ = 0.5 × ramp rate × TTE²
+        - Critical Speed (CS) = Smax - (0.5 × ramp rate × TTE)
+        - D′ = 0.5 × ramp rate × TTE²
         
         Where:
-        - Pmax is the final power at exhaustion
+        - Smax is the final speed at exhaustion
         - TTE is time to exhaustion in minutes
-        - ramp rate is in W/min
+        - ramp rate is in m/s per minute
         """)
     
     if show_references:
         st.markdown("### Scientific References")
         st.markdown("""
-        1. Poole, D. C., Burnley, M., Vanhatalo, A., Rossiter, H. B., & Jones, A. M. (2016). Critical power: An important fatigue threshold in exercise physiology. Medicine and Science in Sports and Exercise, 48(11), 2320-2334.
+        1. Hughson, R. L., Orok, C. J., & Staudt, L. E. (1984). A high velocity treadmill running test to assess endurance running potential. International Journal of Sports Medicine, 5(1), 23-25.
         
-        2. Vanhatalo, A., Jones, A. M., & Burnley, M. (2011). Application of critical power in sport. International Journal of Sports Physiology and Performance, 6(1), 128-136.
-        
-        3. Morton, R. H. (1994). Critical power test for ramp exercise. European Journal of Applied Physiology and Occupational Physiology, 69(5), 435-438.
+        2. Poole, D. C., Burnley, M., Vanhatalo, A., Rossiter, H. B., & Jones, A. M. (2016). Critical power: An important fatigue threshold in exercise physiology. Medicine and Science in Sports and Exercise, 48(11), 2320-2334.
         """)
 
 elif test_method == "Time to Exhaustion Test":
     st.markdown("## Time to Exhaustion Test")
     
     st.markdown("""
-    This method requires performing multiple constant-power tests until exhaustion at different intensities.
+    This method requires performing multiple constant-speed runs until exhaustion at different intensities.
     
     ### Protocol:
-    1. Perform tests at different constant power outputs
-    2. Record time to exhaustion at each power
+    1. Perform runs at different constant speeds
+    2. Record time to exhaustion at each speed
     3. Allow sufficient recovery between tests (24-48 hours)
-    4. Input the data below to calculate CP and W′
+    4. Input the data below to calculate CS and D′
     """)
     
     num_tests = st.number_input("Number of Tests", min_value=2, max_value=5, value=3)
     
     cols = st.columns(num_tests)
-    powers = []
+    speeds = []
     tte_values = []
     
     for i in range(num_tests):
         with cols[i]:
             st.markdown(f"### Test {i+1}")
-            power = st.number_input(f"Power (watts)", min_value=100, max_value=2000, value=300 + i*50, key=f"pow_tte_{i}")
-            tte = st.number_input(f"Time to Exhaustion (seconds)", min_value=60, max_value=1200, value=600 - i*120, key=f"tte_{i}")
-            powers.append(power)
-            tte_values.append(tte)
+            
+            # Speed entry
+            speed_kmh = st.number_input(f"Speed (km/h)", min_value=5.0, max_value=25.0, value=14.0 - i*2.0, key=f"speed_{i}")
+            speed_ms = speed_kmh / 3.6  # Convert to m/s
+            
+            # Time entry
+            minutes = st.number_input(f"Minutes to Exhaustion", min_value=0, max_value=60, value=5 + i*5, key=f"tte_min_{i}")
+            seconds = st.number_input(f"Seconds to Exhaustion", min_value=0, max_value=59, value=0, key=f"tte_sec_{i}")
+            
+            time_seconds = minutes * 60 + seconds
+            
+            speeds.append(speed_ms)
+            tte_values.append(time_seconds)
     
     if st.button("Calculate"):
         if num_tests >= 2:
-            cp, w_prime = calculate_cp_from_tte(powers, tte_values)
-            ftp = calculate_ftp_from_cp(cp)
+            cs, d_prime = calculate_cs_from_tte(speeds, tte_values)
             
             col1, col2 = st.columns([3, 2])
             
             with col1:
                 st.markdown('<div class="result-box">', unsafe_allow_html=True)
                 st.markdown(f"### Results")
-                st.markdown(f"**Critical Power (CP):** {cp:.1f} Watts")
-                st.markdown(f"**CP/kg:** {cp/weight:.2f} W/kg")
-                st.markdown(f"**W′ (W-prime):** {w_prime:.0f} Joules")
-                st.markdown(f"**FTP (estimated):** {ftp:.1f} Watts")
+                st.markdown(f"**Critical Speed (CS):** {cs:.2f} m/s ({cs*3.6:.1f} km/h)")
                 
-                # Training zones
-                zones = calculate_training_zones(ftp)
-                st.markdown("### Training Zones")
-                for zone, (lower, upper) in zones.items():
-                    st.markdown(f"**{zone}:** {lower:.0f} - {upper:.0f} Watts")
+                # Convert to pace
+                cs_pace_km = format_pace(cs, "Kilometers")
+                cs_pace_mile = format_pace(cs, "Miles")
+                
+                st.markdown(f"**Critical Pace:** {cs_pace_km} min/km ({cs_pace_mile} min/mile)")
+                st.markdown(f"**D′ (Anaerobic Distance Capacity):** {d_prime:.0f} meters")
+                
+                # Calculate and display training paces
+                st.markdown("### Training Paces")
+                paces = calculate_training_paces(cs, distance_unit)
+                for zone, pace_range in paces.items():
+                    st.markdown(f"**{zone}:** {pace_range}")
+                
+                # Predict race times
+                st.markdown("### Predicted Race Times")
+                predictions = predict_race_times(cs, d_prime, distance_unit)
+                for race, time in predictions.items():
+                    st.markdown(f"**{race}:** {time}")
+                    
                 st.markdown('</div>', unsafe_allow_html=True)
             
             with col2:
-                # Plot power-duration curve
+                # Plot speed-time relationship
                 fig, ax = plt.subplots(figsize=(10, 6))
                 
                 # Plot actual data points
-                ax.scatter(tte_values, powers, color='#E6754E', s=100, label='TTE Tests')
+                ax.scatter(tte_values, speeds, color='#E6754E', s=100, label='TTE Tests')
                 
                 # Generate points for the hyperbolic curve
                 x_curve = np.linspace(min(tte_values) * 0.8, max(tte_values) * 1.2, 100)
-                y_curve = [cp + (w_prime / x) for x in x_curve]
+                y_curve = [cs + (d_prime / x) for x in x_curve]
                 
                 # Plot the fitted curve
-                ax.plot(x_curve, y_curve, 'b-', label='Power-Duration Curve')
+                ax.plot(x_curve, y_curve, 'b-', label='Speed-Time Curve')
                 
-                # Add horizontal line for CP
-                ax.axhline(y=cp, color='g', linestyle='--', label=f'CP: {cp:.1f}W')
+                # Add horizontal line for CS
+                ax.axhline(y=cs, color='g', linestyle='--', label=f'CS: {cs:.2f} m/s')
+                
+                # Convert y-axis from m/s to km/h for readability
+                ax.set_yticks(np.arange(0, max(speeds) * 1.2, 0.5))
+                ax.set_yticklabels([f"{x*3.6:.1f}" for x in np.arange(0, max(speeds) * 1.2, 0.5)])
                 
                 ax.set_xlabel('Time to Exhaustion (seconds)')
-                ax.set_ylabel('Power (watts)')
-                ax.set_title('Power-Duration Relationship')
+                ax.set_ylabel('Speed (km/h)')
+                ax.set_title('Speed-Time Relationship')
                 ax.grid(True, alpha=0.3)
                 ax.legend()
                 
@@ -506,17 +748,17 @@ elif test_method == "Time to Exhaustion Test":
     if show_formulas:
         st.markdown("### Calculation Method")
         st.markdown("""
-        The linear relationship between power and the inverse of time to exhaustion is used:
+        The hyperbolic relationship between speed and time to exhaustion is used:
         
-        P = CP + W′/t
+        S = CS + D′/t
         
         Where:
-        - P is the constant power
+        - S is the constant speed
         - t is the time to exhaustion in seconds
-        - CP is critical power
-        - W′ is the anaerobic work capacity
+        - CS is critical speed
+        - D′ is the anaerobic distance capacity
         
-        The parameters are determined through linear regression when plotting power vs. 1/time.
+        The parameters are determined through hyperbolic curve fitting.
         """)
     
     if show_references:
@@ -524,196 +766,7 @@ elif test_method == "Time to Exhaustion Test":
         st.markdown("""
         1. Hill, D. W. (1993). The critical power concept. Sports Medicine, 16(4), 237-254.
         
-        2. Poole, D. C., Ward, S. A., Gardner, G. W., & Whipp, B. J. (1988). Metabolic and respiratory profile of the upper limit for prolonged exercise in man. Ergonomics, 31(9), 1265-1279.
+        2. Smith, C. G., & Jones, A. M. (2001). The relationship between critical velocity, maximal lactate steady-state velocity and lactate turnpoint velocity in runners. European Journal of Applied Physiology, 85(1-2), 19-26.
         
-        3. Moritani, T., Nagata, A., deVries, H. A., & Muro, M. (1981). Critical power as a measure of physical work capacity and anaerobic threshold. Ergonomics, 24(5), 339-350.
+        3. Poole, D. C., Ward, S. A., Gardner, G. W., & Whipp, B. J. (1988). Metabolic and respiratory profile of the upper limit for prolonged exercise in man. Ergonomics, 31(9), 1265-1279.
         """)
-
-# Additional information section
-st.markdown("---")
-col1, col2 = st.columns([2, 1])
-
-with col1:
-    st.markdown("## Understanding Critical Power and W′")
-    
-    st.markdown("""
-    **Critical Power (CP)** represents the highest power output that can be sustained "indefinitely" without fatigue (theoretically 30-60 minutes). It's closely related to the lactate threshold and is a key determinant of endurance performance.
-    
-    **W′ (W-prime)** represents the finite amount of work that can be performed above critical power. Think of it as your anaerobic work capacity or energy reserves.
-    
-    Together, these two parameters define your power-duration relationship and can be used to:
-    1. Predict performance at different durations
-    2. Set appropriate training zones
-    3. Optimize pacing strategies
-    4. Track changes in fitness over time
-    """)
-
-with col2:
-    st.markdown("## Recommendations")
-    
-    beginner_recs = """
-    - Focus on building aerobic endurance
-    - Start with the 3-min test or ramp test
-    - Re-test every 8-12 weeks
-    - Target CP/kg: 2.5-3.5 W/kg
-    """
-    
-    intermediate_recs = """
-    - Include both threshold and VO2max training
-    - Try the multiple time trial approach
-    - Re-test every 6-8 weeks
-    - Target CP/kg: 3.5-4.2 W/kg
-    """
-    
-    advanced_recs = """
-    - Periodize training based on CP and W′
-    - Use more precise methods like multiple time trials
-    - Monitor changes in both CP and W′
-    - Target CP/kg: 4.2-5.0 W/kg
-    """
-    
-    elite_recs = """
-    - Detailed analysis of power-duration curve
-    - Regular testing with multiple protocols
-    - Optimize W′ balance for races
-    - Target CP/kg: 5.0+ W/kg
-    """
-    
-    if experience_level == "Beginner":
-        st.markdown(beginner_recs)
-    elif experience_level == "Intermediate":
-        st.markdown(intermediate_recs)
-    elif experience_level == "Advanced":
-        st.markdown(advanced_recs)
-    else:  # Elite
-        st.markdown(elite_recs)
-
-# W' Balance Simulator
-st.markdown("---")
-st.markdown("## W′ Balance Simulator")
-st.markdown("""
-This simulator helps you understand how W′ (your anaerobic capacity) gets depleted and recharged during a ride based on your estimated Critical Power.
-""")
-
-if 'cp' in locals() and 'w_prime' in locals():
-    simulate_enabled = True
-    default_cp = cp
-    default_wprime = w_prime
-else:
-    simulate_enabled = False
-    default_cp = 300
-    default_wprime = 20000
-
-col1, col2 = st.columns([1, 1])
-
-with col1:
-    if not simulate_enabled:
-        st.markdown("#### Enter your values or calculate them using the methods above")
-        sim_cp = st.number_input("Critical Power (W)", min_value=100, max_value=500, value=default_cp)
-        sim_wprime = st.number_input("W′ (J)", min_value=5000, max_value=50000, value=default_wprime)
-    else:
-        sim_cp = default_cp
-        sim_wprime = default_wprime
-        st.markdown(f"#### Using calculated values: CP = {sim_cp:.1f}W, W′ = {sim_wprime:.0f}J")
-    
-    st.markdown("#### Simulation Parameters")
-    duration = st.slider("Ride Duration (minutes)", min_value=5, max_value=60, value=20)
-    
-    # Create a simple ride profile
-    profile_type = st.selectbox("Ride Profile", ["Steady State", "Intervals", "Variable Intensity", "Race Simulation"])
-    
-    if st.button("Run Simulation"):
-        # Generate power data based on profile type
-        time_axis = np.linspace(0, duration*60, duration*60)  # second-by-second
-        
-        if profile_type == "Steady State":
-            intensity = st.slider("Intensity (% of CP)", min_value=70, max_value=110, value=95) / 100
-            power_data = np.ones_like(time_axis) * sim_cp * intensity
-            
-        elif profile_type == "Intervals":
-            work_intensity = st.slider("Work Interval Intensity (% of CP)", min_value=100, max_value=150, value=120) / 100
-            rest_intensity = st.slider("Rest Interval Intensity (% of CP)", min_value=50, max_value=90, value=70) / 100
-            interval_length = st.slider("Interval Length (seconds)", min_value=30, max_value=300, value=120)
-            rest_length = st.slider("Rest Length (seconds)", min_value=30, max_value=300, value=60)
-            
-            power_data = np.zeros_like(time_axis)
-            for i in range(len(time_axis)):
-                cycle_position = i % (interval_length + rest_length)
-                if cycle_position < interval_length:
-                    power_data[i] = sim_cp * work_intensity
-                else:
-                    power_data[i] = sim_cp * rest_intensity
-        
-        elif profile_type == "Variable Intensity":
-            # Create a variable ride with random fluctuations
-            base_intensity = st.slider("Base Intensity (% of CP)", min_value=70, max_value=100, value=85) / 100
-            variability = st.slider("Variability (%)", min_value=5, max_value=30, value=15)
-            
-            # Generate smooth random variations
-            from scipy.ndimage import gaussian_filter1d
-            random_variations = np.random.normal(0, variability/100, size=len(time_axis))
-            smoothed_variations = gaussian_filter1d(random_variations, sigma=30)  # Smoothing factor
-            
-            power_data = (base_intensity + smoothed_variations) * sim_cp
-            power_data = np.clip(power_data, 0.5*sim_cp, 1.5*sim_cp)  # Limit the range
-            
-        elif profile_type == "Race Simulation":
-            # Simulates a race with a steady start, some attacks, and a finishing sprint
-            power_data = np.ones_like(time_axis) * 0.9 * sim_cp  # Base at 90% CP
-            
-            # Add some attacks (3-4 random attacks)
-            num_attacks = np.random.randint(3, 5)
-            for _ in range(num_attacks):
-                attack_start = np.random.randint(5*60, (duration-3)*60)
-                attack_duration = np.random.randint(30, 120)  # 30s to 2min attacks
-                attack_intensity = np.random.uniform(1.2, 1.4)  # 120-140% CP
-                power_data[attack_start:attack_start+attack_duration] = sim_cp * attack_intensity
-                
-                # Add final sprint in last 30-60 seconds
-                sprint_start = (duration * 60) - np.random.randint(30, 60)
-                sprint_duration = np.random.randint(20, 40)
-                power_data[sprint_start:sprint_start+sprint_duration] = sim_cp * 1.5  # 150% of CP for sprint
-        
-        # Calculate W' balance
-        w_balance = w_prime_balance(power_data, sim_cp, sim_wprime)
-        
-        # Plot results
-        with col2:
-            fig, ax1 = plt.subplots(figsize=(10, 6))
-            
-            color = '#E6754E'
-            ax1.set_xlabel('Time (minutes)')
-            ax1.set_ylabel('Power (Watts)', color=color)
-            ax1.plot(time_axis/60, power_data, color=color, alpha=0.7)
-            ax1.tick_params(axis='y', labelcolor=color)
-            ax1.axhline(y=sim_cp, color=color, linestyle='--', alpha=0.7, label=f'CP: {sim_cp:.0f}W')
-            
-            # Create second y-axis for W' balance
-            ax2 = ax1.twinx()
-            color = 'blue'
-            ax2.set_ylabel('W′ Balance (J)', color=color)
-            ax2.plot(time_axis/60, w_balance, color=color)
-            ax2.tick_params(axis='y', labelcolor=color)
-            ax2.axhline(y=sim_wprime, color=color, linestyle='--', alpha=0.7, label=f'W′: {sim_wprime:.0f}J')
-            
-            # Add a W' depletion danger zone
-            ax2.axhspan(0, 2000, color='red', alpha=0.2, label='Danger Zone')
-            
-            # Combine legends
-            lines1, labels1 = ax1.get_legend_handles_labels()
-            lines2, labels2 = ax2.get_legend_handles_labels()
-            ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
-            
-            plt.title('Power Output and W′ Balance Simulation')
-            plt.grid(True, alpha=0.3)
-            st.pyplot(fig)
-            
-            # Summary statistics
-            st.markdown('<div class="result-box">', unsafe_allow_html=True)
-            st.markdown("### Simulation Summary")
-            st.markdown(f"**Average Power:** {np.mean(power_data):.1f} Watts ({np.mean(power_data)/sim_cp*100:.1f}% of CP)")
-            st.markdown(f"**Normalized Power (estimated):** {(np.mean(power_data**4)**(1/4)):.1f} Watts")
-            st.markdown(f"**Time Above CP:** {np.sum(power_data > sim_cp)/60:.1f} minutes")
-            st.markdown(f"**Minimum W′ Balance:** {min(w_balance):.0f} Joules")
-            st.markdown(f"**W′ Expended:** {sim_wprime - min(w_balance):.0f} Joules ({(sim_wprime - min(w_balance))/sim_wprime*100:.1f}% of total)")
-            st.markdown('</div>', unsafe_allow_html=True)
