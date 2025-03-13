@@ -72,7 +72,7 @@ st.markdown('<p class="highlight">Science-based running performance metrics</p>'
 
 # Sidebar
 with st.sidebar:
-    st.image("Logotype_Light@2x.png", width=200)
+    st.image("https://via.placeholder.com/150x150.png?text=Your+Logo", width=150)
     st.markdown("## Test Protocols")
     test_method = st.selectbox(
         "Select Testing Method",
@@ -209,14 +209,27 @@ def predict_race_times(cs, d_prime, unit):
         time_seconds = dist / cs - d_prime / (cs * cs)
         
         if time_seconds > 0:
+            # Calculate average pace for this distance
+            avg_speed = dist / time_seconds
+            
+            if unit == "Miles" and (race == "5K" or race == "10K" or race == "Half Marathon" or race == "Marathon"):
+                # Convert to pace per mile for common longer races when using miles
+                race_distance_miles = dist / 1609.34
+                pace_per_mile = format_pace(avg_speed, "Miles")
+                pace_info = f" (pace: {pace_per_mile}/mi)"
+            else:
+                # Default to pace per km
+                pace_per_km = format_pace(avg_speed, "Kilometers")
+                pace_info = f" (pace: {pace_per_km}/km)"
+            
             hours = int(time_seconds // 3600)
             minutes = int((time_seconds % 3600) // 60)
             seconds = int(time_seconds % 60)
             
             if hours > 0:
-                predictions[race] = f"{hours}:{minutes:02d}:{seconds:02d}"
+                predictions[race] = f"{hours}:{minutes:02d}:{seconds:02d}{pace_info}"
             else:
-                predictions[race] = f"{minutes}:{seconds:02d}"
+                predictions[race] = f"{minutes}:{seconds:02d}{pace_info}"
         else:
             predictions[race] = "N/A"
             
@@ -770,3 +783,179 @@ elif test_method == "Time to Exhaustion Test":
         
         3. Poole, D. C., Ward, S. A., Gardner, G. W., & Whipp, B. J. (1988). Metabolic and respiratory profile of the upper limit for prolonged exercise in man. Ergonomics, 31(9), 1265-1279.
         """)
+
+# D' Balance Simulator
+st.markdown("---")
+st.markdown("## D′ Balance Simulator")
+st.markdown("""
+This simulator helps you understand how D′ (your anaerobic distance capacity) gets depleted and recharged during a run based on your estimated Critical Speed.
+""")
+
+if 'cs' in locals() and 'd_prime' in locals():
+    simulate_enabled = True
+    default_cs = cs
+    default_dprime = d_prime
+else:
+    simulate_enabled = False
+    default_cs = 4.0  # m/s
+    default_dprime = 250  # meters
+
+col1, col2 = st.columns([1, 1])
+
+with col1:
+    if not simulate_enabled:
+        st.markdown("#### Enter your values or calculate them using the methods above")
+        sim_cs = st.number_input("Critical Speed (m/s)", min_value=2.0, max_value=7.0, value=default_cs, step=0.1)
+        sim_dprime = st.number_input("D′ (m)", min_value=50, max_value=500, value=default_dprime)
+    else:
+        sim_cs = default_cs
+        sim_dprime = default_dprime
+        st.markdown(f"#### Using calculated values: CS = {sim_cs:.2f} m/s, D′ = {sim_dprime:.0f}m")
+    
+    st.markdown("#### Simulation Parameters")
+    duration = st.slider("Run Duration (minutes)", min_value=5, max_value=60, value=20)
+    
+    # Create a simple run profile
+    profile_type = st.selectbox("Run Profile", ["Steady Pace", "Intervals", "Variable Pace", "Race Simulation"])
+    
+    if st.button("Run Simulation"):
+        # Generate speed data based on profile type
+        time_axis = np.linspace(0, duration*60, duration*60)  # second-by-second
+        
+        if profile_type == "Steady Pace":
+            intensity = st.slider("Intensity (% of CS)", min_value=70, max_value=110, value=95) / 100
+            speed_data = np.ones_like(time_axis) * sim_cs * intensity
+            
+        elif profile_type == "Intervals":
+            work_intensity = st.slider("Work Interval Intensity (% of CS)", min_value=100, max_value=150, value=120) / 100
+            rest_intensity = st.slider("Recovery Interval Intensity (% of CS)", min_value=50, max_value=90, value=70) / 100
+            interval_length = st.slider("Interval Length (seconds)", min_value=30, max_value=300, value=120)
+            rest_length = st.slider("Rest Length (seconds)", min_value=30, max_value=300, value=60)
+            
+            speed_data = np.zeros_like(time_axis)
+            for i in range(len(time_axis)):
+                cycle_position = i % (interval_length + rest_length)
+                if cycle_position < interval_length:
+                    speed_data[i] = sim_cs * work_intensity
+                else:
+                    speed_data[i] = sim_cs * rest_intensity
+        
+        elif profile_type == "Variable Pace":
+            # Create a variable run with random fluctuations
+            base_intensity = st.slider("Base Intensity (% of CS)", min_value=70, max_value=100, value=85) / 100
+            variability = st.slider("Variability (%)", min_value=5, max_value=30, value=15)
+            
+            # Generate smooth random variations
+            from scipy.ndimage import gaussian_filter1d
+            random_variations = np.random.normal(0, variability/100, size=len(time_axis))
+            smoothed_variations = gaussian_filter1d(random_variations, sigma=30)  # Smoothing factor
+            
+            speed_data = (base_intensity + smoothed_variations) * sim_cs
+            speed_data = np.clip(speed_data, 0.5*sim_cs, 1.5*sim_cs)  # Limit the range
+            
+        elif profile_type == "Race Simulation":
+            # Simulates a race with a steady start, some surges, and a finishing kick
+            speed_data = np.ones_like(time_axis) * 0.9 * sim_cs  # Base at 90% CS
+            
+            # Add some surges (3-4 random surges)
+            num_surges = np.random.randint(3, 5)
+            for _ in range(num_surges):
+                surge_start = np.random.randint(5*60, (duration-3)*60)
+                surge_duration = np.random.randint(30, 120)  # 30s to 2min surges
+                surge_intensity = np.random.uniform(1.1, 1.3)  # 110-130% CS
+                speed_data[surge_start:surge_start+surge_duration] = sim_cs * surge_intensity
+                
+            # Add final kick in last 30-60 seconds
+            kick_start = (duration * 60) - np.random.randint(30, 60)
+            kick_duration = np.random.randint(20, 40)
+            speed_data[kick_start:kick_start+kick_duration] = sim_cs * 1.3  # 130% of CS for final kick
+        
+        # Calculate D' balance
+        d_balance = d_prime_balance(speed_data, sim_cs, sim_dprime)
+        
+        # Plot results
+        with col2:
+            fig, ax1 = plt.subplots(figsize=(10, 6))
+            
+            color = '#E6754E'
+            ax1.set_xlabel('Time (minutes)')
+            ax1.set_ylabel('Speed (km/h)', color=color)
+            ax1.plot(time_axis/60, speed_data*3.6, color=color, alpha=0.7)  # Convert m/s to km/h
+            ax1.tick_params(axis='y', labelcolor=color)
+            ax1.axhline(y=sim_cs*3.6, color=color, linestyle='--', alpha=0.7, label=f'CS: {sim_cs*3.6:.1f} km/h')
+            
+            # Create second y-axis for D' balance
+            ax2 = ax1.twinx()
+            color = 'blue'
+            ax2.set_ylabel('D′ Balance (m)', color=color)
+            ax2.plot(time_axis/60, d_balance, color=color)
+            ax2.tick_params(axis='y', labelcolor=color)
+            ax2.axhline(y=sim_dprime, color=color, linestyle='--', alpha=0.7, label=f'D′: {sim_dprime:.0f}m')
+            
+            # Add a D' depletion danger zone
+            ax2.axhspan(0, 20, color='red', alpha=0.2, label='Danger Zone')
+            
+            # Combine legends
+            lines1, labels1 = ax1.get_legend_handles_labels()
+            lines2, labels2 = ax2.get_legend_handles_labels()
+            ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
+            
+            plt.title('Running Speed and D′ Balance Simulation')
+            plt.grid(True, alpha=0.3)
+            st.pyplot(fig)
+            
+            # Summary statistics
+            st.markdown('<div class="result-box">', unsafe_allow_html=True)
+            st.markdown("### Simulation Summary")
+            avg_speed_kmh = np.mean(speed_data) * 3.6
+            avg_pace_km = format_pace(np.mean(speed_data), "Kilometers")
+            
+            st.markdown(f"**Average Speed:** {avg_speed_kmh:.1f} km/h ({avg_pace_km} min/km)")
+            st.markdown(f"**Average Intensity:** {np.mean(speed_data)/sim_cs*100:.1f}% of CS")
+            st.markdown(f"**Time Above CS:** {np.sum(speed_data > sim_cs)/60:.1f} minutes")
+            st.markdown(f"**Minimum D′ Balance:** {min(d_balance):.0f} meters")
+            st.markdown(f"**D′ Expended:** {sim_dprime - min(d_balance):.0f} meters ({(sim_dprime - min(d_balance))/sim_dprime*100:.1f}% of total)")
+            
+            # Estimated fatigue level
+            fatigue_level = (sim_dprime - min(d_balance)) / sim_dprime
+            if fatigue_level < 0.5:
+                fatigue_status = "Low fatigue - You could maintain this effort or increase intensity"
+            elif fatigue_level < 0.8:
+                fatigue_status = "Moderate fatigue - Sustainable but challenging"
+            else:
+                fatigue_status = "High fatigue - Near exhaustion, significantly reduced performance"
+            
+            st.markdown(f"**Fatigue Status:** {fatigue_status}")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+# Add explanation of results
+st.markdown("---")
+st.markdown("## Interpreting Your Results")
+
+st.markdown("""
+### Critical Speed (CS)
+Critical Speed represents the highest intensity you can sustain for a very long time (theoretically 30-60 minutes) without continual fatigue accumulation. It's closely related to your lactate threshold and is a fundamental metric for endurance performance.
+
+### D′ (D-prime)
+D′ represents your finite anaerobic distance capacity - the amount of distance you can cover above your Critical Speed before exhaustion. Think of it as your "battery" of high-intensity energy.
+
+### How to use these metrics:
+1. **Pacing:** In longer races, stay at or slightly below your CS to avoid depleting D′
+2. **Intervals:** Design interval sessions that target CS (to improve it) or D′ (to expand it)
+3. **Race strategy:** For distance events, manage your D′ expenditure carefully - save some for hills and finishing sprint
+4. **Training zones:** Use CS to set precise, physiologically meaningful training zones
+
+### What makes a good CS and D′?
+| Level | CS (m/s) | CS (min/km) | D′/kg (m/kg) |
+|-------|----------|-------------|--------------|
+| Recreational | 2.5-3.5 | 4:45-6:40 | 2.0-3.0 |
+| Competitive | 3.5-4.5 | 3:42-4:45 | 2.5-4.0 |
+| Elite | 4.5-5.5 | 3:01-3:42 | 3.0-5.0 |
+| World Class | 5.5+ | <3:01 | 4.0-6.0 |
+
+*Note: These values vary based on gender, age, and specialization.*
+""")
+
+# Add a footer
+st.markdown("---")
+st.markdown('<footer>Critical Speed Calculator for Runners © 2025</footer>', unsafe_allow_html=True)
