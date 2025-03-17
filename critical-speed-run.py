@@ -2,8 +2,10 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from scipy.optimize import curve_fit
 import math
+
+from scipy.optimize import curve_fit
+from scipy.stats import linregress  # <-- Ny import för hyperbolisk regression
 
 # Set page configuration
 st.set_page_config(
@@ -76,7 +78,7 @@ with st.sidebar:
     st.markdown("## Test Protocols")
     test_method = st.selectbox(
         "Select Testing Method",
-        ["3-Minute All Out Test", "Time Trials Method", "3/5-Minute Test", "Ramp Test", "Time to Exhaustion Test"]
+        ["3-Minute All Out Test", "Time Trials Method (Hyperbolic)", "3/5-Minute Test", "Ramp Test", "Time to Exhaustion Test"]
     )
     
     st.markdown("## Runner Information")
@@ -109,18 +111,21 @@ def convert_from_meters(distance, unit):
 
 def format_pace(speed_mps, unit):
     """Convert speed in m/s to pace format (min:sec per km or mile)"""
+    if speed_mps <= 0:
+        return "N/A"
     if unit == "Kilometers":
         pace_seconds = 1000 / speed_mps
     elif unit == "Miles":
         pace_seconds = 1609.34 / speed_mps
-    else:  # Meters doesn't make sense for pace
+    else:  # Default to min/km
         pace_seconds = 1000 / speed_mps
     
     minutes = int(pace_seconds // 60)
     seconds = int(pace_seconds % 60)
     return f"{minutes}:{seconds:02d}"
 
-# Helper functions for critical speed calculations
+# --- CALCULATION FUNCTIONS ---
+
 def calculate_cs_from_3min(max_speed, end_speed):
     """Calculate critical speed from 3-minute all out test"""
     cs = end_speed
@@ -128,13 +133,24 @@ def calculate_cs_from_3min(max_speed, end_speed):
     return cs, d_prime
 
 def calculate_cs_from_time_trials(distances, times):
-    """Calculate critical speed from time-trial method"""
-    # Linear regression of distance vs time model
-    def distance_model(t, cs, d_prime):
-        return cs * t + d_prime
+    """
+    NEW: Calculate critical speed from time-trial method using the hyperbolic model:
     
-    popt, _ = curve_fit(distance_model, times, distances)
-    cs, d_prime = popt
+        S = CS + D'/t
+    
+    Där S = (distance / time) för varje test, t = tid i sekunder.
+    Vi gör en linjär regression av (S) mot (1/t).
+    Intercept = CS, lutning = D'.
+    """
+    speeds = np.array(distances) / np.array(times)     # S_i = d_i / t_i
+    inv_times = 1 / np.array(times)                    # 1/t_i
+    
+    # Linjär regression (Y = intercept + slope * X) => Y = S, X = 1/t
+    slope, intercept, r_value, p_value, std_err = linregress(inv_times, speeds)
+    
+    cs = intercept  # Intercept motsvarar CS
+    d_prime = slope # Lutningen motsvarar D'
+    
     return cs, d_prime
 
 def calculate_cs_from_3_5min(distance_3min, distance_5min):
@@ -146,13 +162,12 @@ def calculate_cs_from_3_5min(distance_3min, distance_5min):
 
 def calculate_cs_from_ramp(final_speed, time_to_exhaustion, ramp_rate):
     """Calculate critical speed from ramp test"""
-    # Based on analogous calculations from critical power literature
     cs = final_speed - (0.5 * ramp_rate * time_to_exhaustion / 60)
     d_prime = 0.5 * ramp_rate * (time_to_exhaustion / 60) ** 2
     return cs, d_prime
 
 def calculate_cs_from_tte(speeds, times):
-    """Calculate critical speed from time to exhaustion tests"""
+    """Calculate critical speed from time to exhaustion tests using hyperbolic model: S = CS + D'/t"""
     if len(speeds) < 2 or len(times) < 2:
         return 0, 0
         
@@ -206,6 +221,7 @@ def predict_race_times(cs, d_prime, unit):
     predictions = {}
     for race, dist in distances.items():
         # Using the inverse of the CS-D' relationship: t = d/CS - D'/CS²
+        # (Gäller linjära d=CS·t+D', men vi kör samma approx. Du kan också använda mer exakta modeller.)
         time_seconds = dist / cs - d_prime / (cs * cs)
         
         if time_seconds > 0:
@@ -213,12 +229,10 @@ def predict_race_times(cs, d_prime, unit):
             avg_speed = dist / time_seconds
             
             if unit == "Miles" and (race == "5K" or race == "10K" or race == "Half Marathon" or race == "Marathon"):
-                # Convert to pace per mile for common longer races when using miles
                 race_distance_miles = dist / 1609.34
                 pace_per_mile = format_pace(avg_speed, "Miles")
                 pace_info = f" (pace: {pace_per_mile}/mi)"
             else:
-                # Default to pace per km
                 pace_per_km = format_pace(avg_speed, "Kilometers")
                 pace_info = f" (pace: {pace_per_km}/km)"
             
@@ -237,36 +251,24 @@ def predict_race_times(cs, d_prime, unit):
 
 def d_prime_balance(speed_data, cs, d_prime, tau=300):
     """
-    Calculate D' balance over a run
-    Based on similar methodology to W' balance in cycling
-    
-    Parameters:
-    speed_data: array of speed data in m/s
-    cs: critical speed in m/s
-    d_prime: D' (anaerobic distance capacity) in meters
-    tau: time constant for D' reconstitution
-    
-    Returns:
-    Array of D' balance values
+    Calculate D' balance over a run (analogt med W'-balans i cykling)
     """
     d_prime_balance = np.ones(len(speed_data)) * d_prime
     for i in range(1, len(speed_data)):
-        expenditure = max(0, (speed_data[i-1] - cs)) # D' expenditure
-        recovery = min(0, (speed_data[i-1] - cs))    # D' recovery
+        expenditure = max(0, (speed_data[i-1] - cs))
+        recovery = min(0, (speed_data[i-1] - cs))
         
-        # Apply differential equation similar to Skiba's W' model
         if expenditure > 0:
             d_prime_balance[i] = d_prime_balance[i-1] - expenditure
         else:
-            # D' reconstitution
             d_prime_balance[i] = d_prime - (d_prime - d_prime_balance[i-1]) * np.exp(recovery / (tau * cs))
             
-        # Ensure D' balance doesn't exceed D'
         d_prime_balance[i] = min(d_prime, max(0, d_prime_balance[i]))
         
     return d_prime_balance
 
-# Main content based on selected method
+# --- MAIN CONTENT BASED ON SELECTED METHOD ---
+
 if test_method == "3-Minute All Out Test":
     st.markdown("## 3-Minute All-Out Test")
     
@@ -286,7 +288,6 @@ if test_method == "3-Minute All Out Test":
         max_speed = st.number_input("Maximum Speed (m/s)", min_value=1.0, max_value=10.0, value=5.0, step=0.1)
         end_speed = st.number_input("Average Speed in Last 30s (m/s)", min_value=1.0, max_value=10.0, value=4.0, step=0.1)
         
-        # Add unit conversion UI if needed
         st.markdown("### Speed Entry Options")
         speed_entry = st.radio("Speed Entry Method", ["Direct (m/s)", "Pace"])
         
@@ -323,13 +324,11 @@ if test_method == "3-Minute All Out Test":
                 st.markdown(f"**Critical Pace:** {cs_pace_km} min/km ({cs_pace_mile} min/mile)")
                 st.markdown(f"**D′ (Anaerobic Distance Capacity):** {d_prime:.0f} meters")
                 
-                # Calculate and display training paces
                 st.markdown("### Training Paces")
                 paces = calculate_training_paces(cs, distance_unit)
                 for zone, pace_range in paces.items():
                     st.markdown(f"**{zone}:** {pace_range}")
                 
-                # Predict race times
                 st.markdown("### Predicted Race Times")
                 predictions = predict_race_times(cs, d_prime, distance_unit)
                 for race, time in predictions.items():
@@ -348,21 +347,28 @@ if test_method == "3-Minute All Out Test":
         st.markdown("### Scientific References")
         st.markdown("""
         1. Pettitt, R. W., Jamnick, N., & Clark, I. E. (2012). 3-min all-out exercise test for running. International Journal of Sports Medicine, 33(6), 426-431.
-        
         2. Broxterman, R. M., Ade, C. J., Poole, D. C., Harms, C. A., & Barstow, T. J. (2013). A single test for the determination of parameters of the speed-time relationship for running. Respiratory Physiology & Neurobiology, 185(2), 380-385.
         """)
 
-elif test_method == "Time Trials Method":
-    st.markdown("## Time Trials Method")
+elif test_method == "Time Trials Method (Hyperbolic)":
+    st.markdown("## Time Trials Method (Hyperbolic Model)")
     
     st.markdown("""
-    This method requires performing time trials at different distances to determine Critical Speed and D′.
+    Denna variant av time-trials-metoden använder den hyperboliska modellen:
     
-    ### Protocol:
-    1. Perform 3-5 maximal effort runs of different distances
-    2. Record your time for each distance
-    3. Rest at least 24 hours between trials
-    4. Input the data below to calculate CS and D′
+    \\( S = CS + \\frac{D'}{t} \\)
+
+    Där:
+    - \\( S \\) är medelhastighet (distance/time)
+    - \\( t \\) är total tid i sekunder
+    - \\( CS \\) är Critical Speed
+    - \\( D' \\) är den anaeroba kapaciteten i meter
+    
+    ### Protokoll:
+    1. Genomför 3–5 maximalinsats-lopp på olika distanser (eller tider)
+    2. Registrera tid och sträcka för varje lopp
+    3. Vila minst 24 timmar mellan loppen
+    4. Mata in data nedan för att beräkna CS och D′
     """)
     
     num_trials = st.number_input("Number of Time Trials", min_value=2, max_value=5, value=3)
@@ -375,17 +381,14 @@ elif test_method == "Time Trials Method":
         with cols[i]:
             st.markdown(f"### Trial {i+1}")
             
-            # Distance entry with unit conversion
             distance_val = st.number_input(f"Distance ({distance_unit})", 
-                                         min_value=0.1, 
-                                         max_value=50.0 if distance_unit != "Meters" else 10000.0, 
-                                         value=1.0 if distance_unit != "Meters" else 400.0,
-                                         step=0.1,
-                                         key=f"dist_{i}")
-            
+                                           min_value=0.1, 
+                                           max_value=50.0 if distance_unit != "Meters" else 10000.0, 
+                                           value=1.0 if distance_unit != "Meters" else 400.0,
+                                           step=0.1,
+                                           key=f"dist_{i}")
             distance_meters = convert_to_meters(distance_val, distance_unit)
             
-            # Time entry
             minutes = st.number_input(f"Minutes", min_value=0, max_value=180, value=3 if i == 0 else 5 if i == 1 else 10, key=f"min_{i}")
             seconds = st.number_input(f"Seconds", min_value=0, max_value=59, value=0, key=f"sec_{i}")
             
@@ -402,23 +405,20 @@ elif test_method == "Time Trials Method":
             
             with col1:
                 st.markdown('<div class="result-box">', unsafe_allow_html=True)
-                st.markdown(f"### Results")
+                st.markdown(f"### Results (Hyperbolic Model)")
                 st.markdown(f"**Critical Speed (CS):** {cs:.2f} m/s")
                 
-                # Convert to pace
                 cs_pace_km = format_pace(cs, "Kilometers")
                 cs_pace_mile = format_pace(cs, "Miles")
                 
                 st.markdown(f"**Critical Pace:** {cs_pace_km} min/km ({cs_pace_mile} min/mile)")
                 st.markdown(f"**D′ (Anaerobic Distance Capacity):** {d_prime:.0f} meters")
                 
-                # Calculate and display training paces
                 st.markdown("### Training Paces")
                 paces = calculate_training_paces(cs, distance_unit)
                 for zone, pace_range in paces.items():
                     st.markdown(f"**{zone}:** {pace_range}")
                 
-                # Predict race times
                 st.markdown("### Predicted Race Times")
                 predictions = predict_race_times(cs, d_prime, distance_unit)
                 for race, time in predictions.items():
@@ -427,49 +427,37 @@ elif test_method == "Time Trials Method":
                 st.markdown('</div>', unsafe_allow_html=True)
             
             with col2:
-                # Plot distance-time relationship
+                # Plot (S) vs (1/t)
                 fig, ax = plt.subplots(figsize=(10, 6))
                 
-                # Plot actual data points
-                ax.scatter(times, distances, color='#E6754E', s=100, label='Time Trials')
+                speeds = [distances[i] / times[i] for i in range(num_trials)]
+                inv_t = [1/times[i] for i in range(num_trials)]
                 
-                # Generate points for the linear relationship
-                x_curve = np.linspace(0, max(times) * 1.2, 100)
-                y_curve = cs * x_curve + d_prime
+                ax.scatter(inv_t, speeds, color='#E6754E', s=100, label='Time Trials')
                 
-                # Plot the fitted line
-                ax.plot(x_curve, y_curve, 'b-', label='Distance-Time Line')
+                # Skapa linje för regressionen
+                x_curve = np.linspace(0, max(inv_t)*1.2, 100)
+                y_curve = cs + d_prime * x_curve
+                ax.plot(x_curve, y_curve, 'b-', label='S = CS + D\'(1/t)')
                 
-                # Set axis labels based on user's unit preference
-                ax.set_xlabel('Time (seconds)')
-                
-                if distance_unit == "Kilometers":
-                    ax.set_ylabel('Distance (km)')
-                    # Convert y-axis from meters to kilometers
-                    ax.set_yticks(np.arange(0, max(distances) * 1.2, 1000))
-                    ax.set_yticklabels([f"{x/1000:.0f}" for x in np.arange(0, max(distances) * 1.2, 1000)])
-                elif distance_unit == "Miles":
-                    ax.set_ylabel('Distance (miles)')
-                    # Convert y-axis from meters to miles
-                    ax.set_yticks(np.arange(0, max(distances) * 1.2, 1609.34))
-                    ax.set_yticklabels([f"{x/1609.34:.0f}" for x in np.arange(0, max(distances) * 1.2, 1609.34)])
-                else:
-                    ax.set_ylabel('Distance (meters)')
-                
-                ax.set_title('Distance-Time Relationship')
+                ax.set_xlabel('1 / Time (1/s)')
+                ax.set_ylabel('Average Speed (m/s)')
+                ax.set_title('Hyperbolic Speed-Time Relationship')
                 ax.grid(True, alpha=0.3)
                 ax.legend()
                 
                 st.pyplot(fig)
                 
-                # Also show in tabular format
+                # Visa data i tabell
                 st.markdown("### Trial Data")
                 trial_data = []
                 for i in range(num_trials):
+                    avg_speed = speeds[i]
                     trial_data.append({
                         "Distance": f"{convert_from_meters(distances[i], distance_unit):.2f} {distance_unit}",
                         "Time": f"{times[i] // 60}:{times[i] % 60:02d}",
-                        "Speed": f"{distances[i] / times[i]:.2f} m/s"
+                        "Avg Speed (m/s)": f"{avg_speed:.2f}",
+                        "1/Time (1/s)": f"{inv_t[i]:.5f}"
                     })
                 
                 st.table(pd.DataFrame(trial_data))
@@ -478,28 +466,30 @@ elif test_method == "Time Trials Method":
     
     if show_formulas:
         st.markdown("### Calculation Method")
-        st.markdown("""
-        The linear distance-time model is used:
-        
-        d = CS × t + D′
-        
-        Where:
-        - d is the distance covered
-        - t is the time in seconds
-        - CS is critical speed
-        - D′ is the anaerobic distance capacity
-        
-        The parameters are determined through linear regression.
+        st.markdown(r"""
+        Vi använder den hyperboliska modellen:
+        \[
+        S = \text{CS} + \frac{D'}{t}
+        \]
+        där:
+        - \( S = \frac{d}{t} \) är medelhastighet
+        - \( t \) är tiden i sekunder
+        - \( \text{CS} \) är Critical Speed
+        - \( D' \) är den anaeroba kapaciteten i meter
+
+        Genom att plotta \( S \) mot \( \frac{1}{t} \) får vi:
+        \[
+        y = \text{CS} + D' \cdot x
+        \]
+        där intercept \( = \text{CS} \) och lutningen \( = D' \).
         """)
     
     if show_references:
         st.markdown("### Scientific References")
         st.markdown("""
         1. Jones, A. M., & Vanhatalo, A. (2017). The 'Critical Power' concept: Applications to sports performance with a focus on intermittent high-intensity exercise. Sports Medicine, 47(Suppl 1), 65-78.
-        
-        2. Florence, S., & Weir, J. P. (1997). Relationship of critical velocity to marathon running performance. European Journal of Applied Physiology and Occupational Physiology, 75(3), 274-278.
-        
-        3. Fukuba, Y., & Whipp, B. J. (1999). A metabolic limit on the ability to make up for lost time in endurance events. Journal of Applied Physiology, 87(2), 853-861.
+        2. Poole, D. C., Burnley, M., Vanhatalo, A., Rossiter, H. B., & Jones, A. M. (2016). Critical power: An important fatigue threshold in exercise physiology. Medicine and Science in Sports and Exercise, 48(11), 2320-2334.
+        3. Smith, C. G., & Jones, A. M. (2001). The relationship between critical velocity, maximal lactate steady-state velocity and lactate turnpoint velocity in runners. European Journal of Applied Physiology, 85(1-2), 19-26.
         """)
 
 elif test_method == "3/5-Minute Test":
@@ -517,20 +507,18 @@ elif test_method == "3/5-Minute Test":
     col1, col2 = st.columns(2)
     
     with col1:
-        # Distance entry with unit conversion
         distance_3min_val = st.number_input(f"3-Minute Distance ({distance_unit})", 
-                                     min_value=0.1, 
-                                     max_value=50.0 if distance_unit != "Meters" else 5000.0, 
-                                     value=0.8 if distance_unit != "Meters" else 800.0,
-                                     step=0.1)
+                                            min_value=0.1, 
+                                            max_value=50.0 if distance_unit != "Meters" else 5000.0, 
+                                            value=0.8 if distance_unit != "Meters" else 800.0,
+                                            step=0.1)
         
         distance_5min_val = st.number_input(f"5-Minute Distance ({distance_unit})", 
-                                     min_value=0.1, 
-                                     max_value=50.0 if distance_unit != "Meters" else 5000.0, 
-                                     value=1.3 if distance_unit != "Meters" else 1300.0,
-                                     step=0.1)
+                                            min_value=0.1, 
+                                            max_value=50.0 if distance_unit != "Meters" else 5000.0, 
+                                            value=1.3 if distance_unit != "Meters" else 1300.0,
+                                            step=0.1)
         
-        # Convert to meters
         distance_3min = convert_to_meters(distance_3min_val, distance_unit)
         distance_5min = convert_to_meters(distance_5min_val, distance_unit)
         
@@ -542,20 +530,17 @@ elif test_method == "3/5-Minute Test":
                 st.markdown(f"### Results")
                 st.markdown(f"**Critical Speed (CS):** {cs:.2f} m/s")
                 
-                # Convert to pace
                 cs_pace_km = format_pace(cs, "Kilometers")
                 cs_pace_mile = format_pace(cs, "Miles")
                 
                 st.markdown(f"**Critical Pace:** {cs_pace_km} min/km ({cs_pace_mile} min/mile)")
                 st.markdown(f"**D′ (Anaerobic Distance Capacity):** {d_prime:.0f} meters")
                 
-                # Calculate and display training paces
                 st.markdown("### Training Paces")
                 paces = calculate_training_paces(cs, distance_unit)
                 for zone, pace_range in paces.items():
                     st.markdown(f"**{zone}:** {pace_range}")
                 
-                # Predict race times
                 st.markdown("### Predicted Race Times")
                 predictions = predict_race_times(cs, d_prime, distance_unit)
                 for race, time in predictions.items():
@@ -570,15 +555,12 @@ elif test_method == "3/5-Minute Test":
         
         - CS = (5-min distance - 3-min distance) / 120 seconds
         - D′ = 3-min distance - (CS × 180 seconds)
-        
-        This is based on the linear distance-time relationship, using two data points.
         """)
     
     if show_references:
         st.markdown("### Scientific References")
         st.markdown("""
         1. Burnley, M., Doust, J. H., & Vanhatalo, A. (2006). A 3-min all-out test to determine peak oxygen uptake and the maximal steady state. Medicine and Science in Sports and Exercise, 38(11), 1995-2003.
-        
         2. Jones, A. M., & Vanhatalo, A. (2017). The 'Critical Power' concept: Applications to sports performance with a focus on intermittent high-intensity exercise. Sports Medicine, 47(Suppl 1), 65-78.
         """)
 
@@ -602,7 +584,6 @@ elif test_method == "Ramp Test":
         ramp_rate_kmh = st.number_input("Ramp Rate (km/h per minute)", min_value=0.1, max_value=2.0, value=0.5, step=0.1)
         time_to_exhaustion = st.number_input("Time to Exhaustion (seconds)", min_value=300, max_value=1800, value=720)
         
-        # Convert to m/s for calculations
         starting_speed = starting_speed_kmh / 3.6
         ramp_rate = ramp_rate_kmh / 3.6
         
@@ -616,20 +597,17 @@ elif test_method == "Ramp Test":
                 st.markdown(f"**Final Speed:** {final_speed*3.6:.1f} km/h ({final_speed:.2f} m/s)")
                 st.markdown(f"**Critical Speed (CS):** {cs:.2f} m/s ({cs*3.6:.1f} km/h)")
                 
-                # Convert to pace
                 cs_pace_km = format_pace(cs, "Kilometers")
                 cs_pace_mile = format_pace(cs, "Miles")
                 
                 st.markdown(f"**Critical Pace:** {cs_pace_km} min/km ({cs_pace_mile} min/mile)")
                 st.markdown(f"**D′ (Anaerobic Distance Capacity):** {d_prime:.0f} meters")
                 
-                # Calculate and display training paces
                 st.markdown("### Training Paces")
                 paces = calculate_training_paces(cs, distance_unit)
                 for zone, pace_range in paces.items():
                     st.markdown(f"**{zone}:** {pace_range}")
                 
-                # Predict race times
                 st.markdown("### Predicted Race Times")
                 predictions = predict_race_times(cs, d_prime, distance_unit)
                 for race, time in predictions.items():
@@ -655,7 +633,6 @@ elif test_method == "Ramp Test":
         st.markdown("### Scientific References")
         st.markdown("""
         1. Hughson, R. L., Orok, C. J., & Staudt, L. E. (1984). A high velocity treadmill running test to assess endurance running potential. International Journal of Sports Medicine, 5(1), 23-25.
-        
         2. Poole, D. C., Burnley, M., Vanhatalo, A., Rossiter, H. B., & Jones, A. M. (2016). Critical power: An important fatigue threshold in exercise physiology. Medicine and Science in Sports and Exercise, 48(11), 2320-2334.
         """)
 
@@ -682,11 +659,9 @@ elif test_method == "Time to Exhaustion Test":
         with cols[i]:
             st.markdown(f"### Test {i+1}")
             
-            # Speed entry
             speed_kmh = st.number_input(f"Speed (km/h)", min_value=5.0, max_value=25.0, value=14.0 - i*2.0, key=f"speed_{i}")
-            speed_ms = speed_kmh / 3.6  # Convert to m/s
+            speed_ms = speed_kmh / 3.6  
             
-            # Time entry
             minutes = st.number_input(f"Minutes to Exhaustion", min_value=0, max_value=60, value=5 + i*5, key=f"tte_min_{i}")
             seconds = st.number_input(f"Seconds to Exhaustion", min_value=0, max_value=59, value=0, key=f"tte_sec_{i}")
             
@@ -706,20 +681,17 @@ elif test_method == "Time to Exhaustion Test":
                 st.markdown(f"### Results")
                 st.markdown(f"**Critical Speed (CS):** {cs:.2f} m/s ({cs*3.6:.1f} km/h)")
                 
-                # Convert to pace
                 cs_pace_km = format_pace(cs, "Kilometers")
                 cs_pace_mile = format_pace(cs, "Miles")
                 
                 st.markdown(f"**Critical Pace:** {cs_pace_km} min/km ({cs_pace_mile} min/mile)")
                 st.markdown(f"**D′ (Anaerobic Distance Capacity):** {d_prime:.0f} meters")
                 
-                # Calculate and display training paces
                 st.markdown("### Training Paces")
                 paces = calculate_training_paces(cs, distance_unit)
                 for zone, pace_range in paces.items():
                     st.markdown(f"**{zone}:** {pace_range}")
                 
-                # Predict race times
                 st.markdown("### Predicted Race Times")
                 predictions = predict_race_times(cs, d_prime, distance_unit)
                 for race, time in predictions.items():
@@ -731,22 +703,17 @@ elif test_method == "Time to Exhaustion Test":
                 # Plot speed-time relationship
                 fig, ax = plt.subplots(figsize=(10, 6))
                 
-                # Plot actual data points
                 ax.scatter(tte_values, speeds, color='#E6754E', s=100, label='TTE Tests')
                 
                 # Generate points for the hyperbolic curve
-                x_curve = np.linspace(min(tte_values) * 0.8, max(tte_values) * 1.2, 100)
+                x_curve = np.linspace(min(tte_values)*0.8, max(tte_values)*1.2, 100)
                 y_curve = [cs + (d_prime / x) for x in x_curve]
                 
-                # Plot the fitted curve
                 ax.plot(x_curve, y_curve, 'b-', label='Speed-Time Curve')
-                
-                # Add horizontal line for CS
                 ax.axhline(y=cs, color='g', linestyle='--', label=f'CS: {cs:.2f} m/s')
                 
-                # Convert y-axis from m/s to km/h for readability
-                ax.set_yticks(np.arange(0, max(speeds) * 1.2, 0.5))
-                ax.set_yticklabels([f"{x*3.6:.1f}" for x in np.arange(0, max(speeds) * 1.2, 0.5)])
+                ax.set_yticks(np.arange(0, max(speeds)*1.2, 0.5))
+                ax.set_yticklabels([f"{x*3.6:.1f}" for x in np.arange(0, max(speeds)*1.2, 0.5)])
                 
                 ax.set_xlabel('Time to Exhaustion (seconds)')
                 ax.set_ylabel('Speed (km/h)')
@@ -778,9 +745,7 @@ elif test_method == "Time to Exhaustion Test":
         st.markdown("### Scientific References")
         st.markdown("""
         1. Hill, D. W. (1993). The critical power concept. Sports Medicine, 16(4), 237-254.
-        
         2. Smith, C. G., & Jones, A. M. (2001). The relationship between critical velocity, maximal lactate steady-state velocity and lactate turnpoint velocity in runners. European Journal of Applied Physiology, 85(1-2), 19-26.
-        
         3. Poole, D. C., Ward, S. A., Gardner, G. W., & Whipp, B. J. (1988). Metabolic and respiratory profile of the upper limit for prolonged exercise in man. Ergonomics, 31(9), 1265-1279.
         """)
 
@@ -791,6 +756,7 @@ st.markdown("""
 This simulator helps you understand how D′ (your anaerobic distance capacity) gets depleted and recharged during a run based on your estimated Critical Speed.
 """)
 
+# Kolla om cs, d_prime finns i scope
 if 'cs' in locals() and 'd_prime' in locals():
     simulate_enabled = True
     default_cs = cs
@@ -815,19 +781,8 @@ with col1:
     st.markdown("#### Simulation Parameters")
     duration = st.slider("Run Duration (minutes)", min_value=5, max_value=60, value=20)
     
-    # Create a simple run profile
     profile_type = st.selectbox("Run Profile", ["Steady Pace", "Intervals", "Variable Pace", "Race Simulation"])
     
-    # Define all potential parameters upfront to avoid state issues
-    intensity = 95
-    work_intensity = 120
-    rest_intensity = 70
-    interval_length = 120
-    rest_length = 60
-    base_intensity = 85
-    variability = 15
-    
-    # Show relevant parameters based on profile
     if profile_type == "Steady Pace":
         intensity = st.slider("Intensity (% of CS)", min_value=70, max_value=110, value=95)
     elif profile_type == "Intervals":
@@ -838,18 +793,15 @@ with col1:
     elif profile_type == "Variable Pace":
         base_intensity = st.slider("Base Intensity (% of CS)", min_value=70, max_value=100, value=85)
         variability = st.slider("Variability (%)", min_value=5, max_value=30, value=15)
-    # Race simulation doesn't need additional parameters
+    # Race simulation har inga extra sliders
     
     if st.button("Run Simulation"):
-        # Generate speed data based on profile type
-        time_axis = np.linspace(0, duration*60, duration*60)  # second-by-second
+        time_axis = np.linspace(0, duration*60, duration*60)
         
         if profile_type == "Steady Pace":
-            # Using pre-defined intensity from slider
             speed_data = np.ones_like(time_axis) * sim_cs * (intensity/100)
             
         elif profile_type == "Intervals":
-            # Using pre-defined work_intensity, rest_intensity, interval_length, rest_length from sliders
             speed_data = np.zeros_like(time_axis)
             for i in range(len(time_axis)):
                 cycle_position = i % (interval_length + rest_length)
@@ -859,47 +811,39 @@ with col1:
                     speed_data[i] = sim_cs * (rest_intensity/100)
         
         elif profile_type == "Variable Pace":
-            # Using pre-defined base_intensity and variability from sliders
-            # Create a variable run with random fluctuations
             from scipy.ndimage import gaussian_filter1d
             random_variations = np.random.normal(0, variability/100, size=len(time_axis))
-            smoothed_variations = gaussian_filter1d(random_variations, sigma=30)  # Smoothing factor
+            smoothed_variations = gaussian_filter1d(random_variations, sigma=30)
             
             speed_data = ((base_intensity/100) + smoothed_variations) * sim_cs
-            speed_data = np.clip(speed_data, 0.5*sim_cs, 1.5*sim_cs)  # Limit the range
-            
+            speed_data = np.clip(speed_data, 0.5*sim_cs, 1.5*sim_cs)
+        
         elif profile_type == "Race Simulation":
-            # Simulates a race with a steady start, some surges, and a finishing kick
-            speed_data = np.ones_like(time_axis) * 0.9 * sim_cs  # Base at 90% CS
+            speed_data = np.ones_like(time_axis) * 0.9 * sim_cs
             
-            # Add some surges (3-4 random surges)
             num_surges = np.random.randint(3, 5)
             for _ in range(num_surges):
                 surge_start = np.random.randint(5*60, (duration-3)*60)
-                surge_duration = np.random.randint(30, 120)  # 30s to 2min surges
-                surge_intensity = np.random.uniform(1.1, 1.3)  # 110-130% CS
+                surge_duration = np.random.randint(30, 120)
+                surge_intensity = np.random.uniform(1.1, 1.3)
                 speed_data[surge_start:surge_start+surge_duration] = sim_cs * surge_intensity
-                
-            # Add final kick in last 30-60 seconds
+            
             kick_start = (duration * 60) - np.random.randint(30, 60)
             kick_duration = np.random.randint(20, 40)
-            speed_data[kick_start:kick_start+kick_duration] = sim_cs * 1.3  # 130% of CS for final kick
+            speed_data[kick_start:kick_start+kick_duration] = sim_cs * 1.3
         
-        # Calculate D' balance
         d_balance = d_prime_balance(speed_data, sim_cs, sim_dprime)
         
-        # Plot results
         with col2:
             fig, ax1 = plt.subplots(figsize=(10, 6))
             
             color = '#E6754E'
             ax1.set_xlabel('Time (minutes)')
             ax1.set_ylabel('Speed (km/h)', color=color)
-            ax1.plot(time_axis/60, speed_data*3.6, color=color, alpha=0.7)  # Convert m/s to km/h
+            ax1.plot(time_axis/60, speed_data*3.6, color=color, alpha=0.7)
             ax1.tick_params(axis='y', labelcolor=color)
             ax1.axhline(y=sim_cs*3.6, color=color, linestyle='--', alpha=0.7, label=f'CS: {sim_cs*3.6:.1f} km/h')
             
-            # Create second y-axis for D' balance
             ax2 = ax1.twinx()
             color = 'blue'
             ax2.set_ylabel('D′ Balance (m)', color=color)
@@ -907,10 +851,8 @@ with col1:
             ax2.tick_params(axis='y', labelcolor=color)
             ax2.axhline(y=sim_dprime, color=color, linestyle='--', alpha=0.7, label=f'D′: {sim_dprime:.0f}m')
             
-            # Add a D' depletion danger zone
             ax2.axhspan(0, 20, color='red', alpha=0.2, label='Danger Zone')
             
-            # Combine legends
             lines1, labels1 = ax1.get_legend_handles_labels()
             lines2, labels2 = ax2.get_legend_handles_labels()
             ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
@@ -919,7 +861,6 @@ with col1:
             plt.grid(True, alpha=0.3)
             st.pyplot(fig)
             
-            # Summary statistics
             st.markdown('<div class="result-box">', unsafe_allow_html=True)
             st.markdown("### Simulation Summary")
             avg_speed_kmh = np.mean(speed_data) * 3.6
@@ -931,7 +872,6 @@ with col1:
             st.markdown(f"**Minimum D′ Balance:** {min(d_balance):.0f} meters")
             st.markdown(f"**D′ Expended:** {sim_dprime - min(d_balance):.0f} meters ({(sim_dprime - min(d_balance))/sim_dprime*100:.1f}% of total)")
             
-            # Estimated fatigue level
             fatigue_level = (sim_dprime - min(d_balance)) / sim_dprime
             if fatigue_level < 0.5:
                 fatigue_status = "Low fatigue - You could maintain this effort or increase intensity"
@@ -943,7 +883,6 @@ with col1:
             st.markdown(f"**Fatigue Status:** {fatigue_status}")
             st.markdown('</div>', unsafe_allow_html=True)
 
-# Add explanation of results
 st.markdown("---")
 st.markdown("## Interpreting Your Results")
 
@@ -961,16 +900,15 @@ D′ represents your finite anaerobic distance capacity - the amount of distance
 4. **Training zones:** Use CS to set precise, physiologically meaningful training zones
 
 ### What makes a good CS and D′?
-| Level | CS (m/s) | CS (min/km) | D′/kg (m/kg) |
-|-------|----------|-------------|--------------|
-| Recreational | 2.5-3.5 | 4:45-6:40 | 2.0-3.0 |
-| Competitive | 3.5-4.5 | 3:42-4:45 | 2.5-4.0 |
-| Elite | 4.5-5.5 | 3:01-3:42 | 3.0-5.0 |
-| World Class | 5.5+ | <3:01 | 4.0-6.0 |
+| Level         | CS (m/s) | CS (min/km) | D′/kg (m/kg) |
+|---------------|----------|-------------|--------------|
+| Recreational  | 2.5-3.5  | 4:45-6:40   | 2.0-3.0      |
+| Competitive   | 3.5-4.5  | 3:42-4:45   | 2.5-4.0      |
+| Elite         | 4.5-5.5  | 3:01-3:42   | 3.0-5.0      |
+| World Class   | 5.5+     | <3:01       | 4.0-6.0      |
 
 *Note: These values vary based on gender, age, and specialization.*
 """)
 
-# Add a footer
 st.markdown("---")
 st.markdown('<footer>Critical Speed Calculator for Runners © 2025</footer>', unsafe_allow_html=True)
